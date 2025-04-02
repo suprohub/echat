@@ -97,7 +97,7 @@ impl eframe::App for EChat {
                 );
 
                 egui::SidePanel::new(Side::Left, "left_panel").show(ctx, |ui| {
-                    ui.label("Rooms");
+                    ui.label("Chats");
 
                     for room in client.client().rooms() {
                         ui.label(room.name().unwrap_or("Unknown name".into()));
