@@ -1,3 +1,4 @@
+use egui::panel::Side;
 use tokio::runtime::Runtime;
 
 use crate::clients::{LoginOption, matrix::MatrixClient};
@@ -7,17 +8,23 @@ use crate::clients::{LoginOption, matrix::MatrixClient};
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct EChat {
     #[serde(skip)]
-    runtime: Runtime,
+    rt: Runtime,
     #[serde(skip)]
     matrix_client: LoginOption<MatrixClient>,
 }
 
 impl Default for EChat {
     fn default() -> Self {
-        let runtime = Runtime::new().unwrap();
+        #[cfg(not(target_arch = "wasm32"))]
+        let rt = Runtime::new().unwrap();
+        #[cfg(target_arch = "wasm32")]
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
         Self {
             matrix_client: Default::default(),
-            runtime,
+            rt,
         }
     }
 }
@@ -46,20 +53,31 @@ impl eframe::App for EChat {
     /// Called by the frame work to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
+        if let LoginOption::LoggedIn(client) = &mut self.matrix_client {
+            self.rt.block_on(client.sync(storage)).unwrap();
+        }
     }
 
     /// Called each time the UI needs repainting, which may be many times per second.
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| match &mut self.matrix_client {
+        match &mut self.matrix_client {
             LoginOption::Auth { username, password } => {
-                ui.label("Login");
-                ui.text_edit_singleline(username);
-                ui.label("Password");
-                ui.text_edit_singleline(password);
+                let mut try_login = false;
 
-                if ui.button("Confirm").clicked() {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.label("Login");
+                    ui.text_edit_singleline(username);
+                    ui.label("Password");
+                    ui.text_edit_singleline(password);
+
+                    if ui.button("Confirm").clicked() {
+                        try_login = true;
+                    }
+                });
+
+                if try_login {
                     self.matrix_client = LoginOption::LoggedIn(
-                        self.runtime
+                        self.rt
                             .block_on(MatrixClient::login(
                                 frame.storage_mut().unwrap(),
                                 username,
@@ -71,10 +89,22 @@ impl eframe::App for EChat {
                 }
             }
             LoginOption::LoggedIn(client) => {
-                ui.label("logged");
-                
+                egui::CentralPanel::default().show(
+                    ctx,
+                    |ui| {
+                        if ui.button("Display name").clicked() {}
+                    },
+                );
+
+                egui::SidePanel::new(Side::Left, "left_panel").show(ctx, |ui| {
+                    ui.label("Rooms");
+
+                    for room in client.client().rooms() {
+                        ui.label(room.name().unwrap_or("Unknown name".into()));
+                    }
+                });
             }
-        });
+        }
     }
 }
 

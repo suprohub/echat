@@ -10,21 +10,20 @@ all-features = true
 targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 
 [dependencies]
-egui = "0.31"
+egui = { version = "0.31", features = [
+    "rayon",         # For enabling fast text tesselation
+] }
 eframe = { version = "0.31", default-features = false, features = [
     "accesskit",     # Make egui compatible with screen readers. NOTE: adds a lot of dependencies.
     "default_fonts", # Embed the default egui fonts.
-    "glow",          # Use the glow rendering backend. Alternative: "wgpu".
+    "wgpu",          # Use the glow rendering backend. Alternative: "glow".
     "persistence",   # Enable restoring app state when restarting the app.
     "wayland",       # To support Linux (and CI)
 ] }
 log = "0.4"
 
-dirs = "6.0"
 serde_json = "1.0"
-matrix-sdk = { version = "0.10", features = ["indexeddb"] }
 anyhow = "1.0"
-futures = "0.3"
 rand = "0.9"
 
 # You only need serde if you want app persistence:
@@ -32,17 +31,22 @@ serde = { version = "1", features = ["derive"] }
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1.44", features = ["full"] }
+matrix-sdk = "0.10"
+tokio = { version = "1.44", features = ["rt-multi-thread", "macros"] }
+dirs = "6.0"
 simple_logger = "5.0"
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-tokio = { version = "1.44", features = ["macros", "rt", "sync"] }
+matrix-sdk = { version = "0.10", default-features = false, features = ["automatic-room-key-forwarding", "native-tls", "e2e-encryption", "qrcode", "indexeddb"] }
+tokio = { version = "1.44", features = ["macros", "rt"] }
 wasm-bindgen-futures = "0.4"
 web-sys = "0.3.70"           # to access the DOM (to hide the loading text)
 
 [profile.release]
 opt-level = 2 # fast and small wasm
+lto = true
+strip = true
 
 # Optimize all dependencies even in debug builds:
 [profile.dev.package."*"]

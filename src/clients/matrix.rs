@@ -111,7 +111,12 @@ impl MatrixClient {
 
     pub fn load_from_storage(storage: &dyn eframe::Storage) -> LoginOption<Self> {
         if let Some(serialized) = storage.get_string("matrix_session") {
-            let rt = Runtime::new().expect("Failed to create runtime");
+            #[cfg(not(target_arch = "wasm32"))]
+            let rt = Runtime::new().unwrap();
+            #[cfg(target_arch = "wasm32")]
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
 
             rt.block_on(async {
                 let full_session: FullSession = serde_json::from_str(&serialized)
@@ -152,7 +157,7 @@ impl MatrixClient {
         }
     }
 
-    pub async fn sync(&mut self) -> Result<()> {
+    pub async fn sync(&mut self, storage: &mut dyn eframe::Storage) -> Result<()> {
         let filter = FilterDefinition::with_lazy_loading();
         let mut sync_settings = SyncSettings::default().filter(filter.into());
 
@@ -163,12 +168,12 @@ impl MatrixClient {
         let response = self.client.sync_once(sync_settings).await?;
         self.sync_token = Some(response.next_batch.clone());
 
-        self.update_session().await?;
+        self.update_session(storage).await?;
 
         Ok(())
     }
 
-    async fn update_session(&self) -> Result<()> {
+    async fn update_session(&self, storage: &mut dyn eframe::Storage) -> Result<()> {
         let user_session = self
             .client
             .matrix_auth()
@@ -183,7 +188,9 @@ impl MatrixClient {
         };
 
         let serialized = serde_json::to_string(&full_session)?;
-        //fs::write(&self.session_path, serialized).await?;
+        storage.set_string("matrix_session", serialized);
+        storage.flush();
+
         Ok(())
     }
 
