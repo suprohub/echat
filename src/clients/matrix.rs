@@ -1,15 +1,16 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Result, anyhow};
+use egui::mutex::Mutex;
 use matrix_sdk::{
-    Client, authentication::matrix::MatrixSession, config::SyncSettings,
+    async_trait, authentication::matrix::MatrixSession, config::SyncSettings,
     ruma::api::client::filter::FilterDefinition,
 };
 use rand::{Rng, distr::Alphanumeric};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 
-use super::LoginOption;
+use super::{Chat, Client, LoginOption};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientSession {
@@ -28,8 +29,8 @@ pub struct FullSession {
 }
 
 pub struct MatrixClient {
-    client: Client,
-    sync_token: Option<String>,
+    client: matrix_sdk::Client,
+    sync_token: Mutex<Option<String>>,
     client_session: ClientSession,
 }
 
@@ -39,7 +40,7 @@ impl MatrixClient {
         username: &str,
         password: &str,
         homeserver: &str,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Self>> {
         #[cfg(not(target_arch = "wasm32"))]
         let data_dir = dirs::data_dir().unwrap().join("echat");
 
@@ -60,14 +61,14 @@ impl MatrixClient {
             .collect();
 
         #[cfg(target_arch = "wasm32")]
-        let client = Client::builder()
+        let client = matrix_sdk::Client::builder()
             .homeserver_url(homeserver)
             .indexeddb_store("matrix_client_db", Some(&passphrase))
             .build()
             .await?;
 
         #[cfg(not(target_arch = "wasm32"))]
-        let client = Client::builder()
+        let client = matrix_sdk::Client::builder()
             .homeserver_url(homeserver)
             .sqlite_store(&db_path, Some(&passphrase))
             .build()
@@ -102,14 +103,14 @@ impl MatrixClient {
         storage.set_string("matrix_session", serialized);
         storage.flush();
 
-        Ok(Self {
+        Ok(Arc::new(Self {
             client,
-            sync_token: None,
+            sync_token: Mutex::new(None),
             client_session,
-        })
+        }))
     }
 
-    pub fn load_from_storage(storage: &dyn eframe::Storage) -> LoginOption<Self> {
+    pub fn load_from_storage(storage: &dyn eframe::Storage) -> LoginOption {
         if let Some(serialized) = storage.get_string("matrix_session") {
             #[cfg(not(target_arch = "wasm32"))]
             let rt = Runtime::new().unwrap();
@@ -123,7 +124,7 @@ impl MatrixClient {
                     .map_err(|e| anyhow!("Deserialization error: {}", e))?;
 
                 #[cfg(target_arch = "wasm32")]
-                let client = Client::builder()
+                let client = matrix_sdk::Client::builder()
                     .homeserver_url(&full_session.client_session.homeserver)
                     .indexeddb_store(
                         "matrix_client_db",
@@ -133,7 +134,7 @@ impl MatrixClient {
                     .await?;
 
                 #[cfg(not(target_arch = "wasm32"))]
-                let client = Client::builder()
+                let client = matrix_sdk::Client::builder()
                     .homeserver_url(&full_session.client_session.homeserver)
                     .sqlite_store(
                         &full_session.client_session.db_path,
@@ -144,36 +145,36 @@ impl MatrixClient {
 
                 client.restore_session(full_session.user_session).await?;
 
-                Ok(Self {
+                Ok(Arc::new(Self {
                     client,
-                    sync_token: full_session.sync_token,
+                    sync_token: Mutex::new(full_session.sync_token),
                     client_session: full_session.client_session,
-                })
+                }))
             })
-            .map(LoginOption::LoggedIn)
+            .map(|c| LoginOption::LoggedIn(c))
             .unwrap_or_else(|_: anyhow::Error| LoginOption::default())
         } else {
             LoginOption::default()
         }
     }
+}
 
-    pub async fn sync(&mut self, storage: &mut dyn eframe::Storage) -> Result<()> {
+#[async_trait]
+impl Client for MatrixClient {
+    async fn sync(&self) -> Result<()> {
         let filter = FilterDefinition::with_lazy_loading();
         let mut sync_settings = SyncSettings::default().filter(filter.into());
 
-        if let Some(token) = &self.sync_token {
+        if let Some(token) = &*self.sync_token.lock() {
             sync_settings = sync_settings.token(token);
         }
 
         let response = self.client.sync_once(sync_settings).await?;
-        self.sync_token = Some(response.next_batch.clone());
-
-        self.update_session(storage).await?;
-
+        *self.sync_token.lock() = Some(response.next_batch.clone());
         Ok(())
     }
 
-    async fn update_session(&self, storage: &mut dyn eframe::Storage) -> Result<()> {
+    fn save(&self, storage: &mut dyn eframe::Storage) -> Result<()> {
         let user_session = self
             .client
             .matrix_auth()
@@ -181,24 +182,23 @@ impl MatrixClient {
             .ok_or_else(|| anyhow!("Session expired"))?
             .clone();
 
-        let full_session = FullSession {
-            client_session: self.client_session.clone(),
-            user_session,
-            sync_token: self.sync_token.clone(),
-        };
-
-        let serialized = serde_json::to_string(&full_session)?;
-        storage.set_string("matrix_session", serialized);
-        storage.flush();
+        storage.set_string(
+            "matrix_session",
+            serde_json::to_string(&FullSession {
+                client_session: self.client_session.clone(),
+                user_session,
+                sync_token: self.sync_token.lock().clone(),
+            })?,
+        );
 
         Ok(())
     }
 
-    pub fn is_authenticated(&self) -> bool {
-        self.client.matrix_auth().session().is_some()
-    }
-
-    pub fn client(&self) -> &Client {
-        &self.client
+    fn chats(&self) -> Vec<Chat> {
+        self.client
+            .rooms()
+            .into_iter()
+            .map(|r| Chat::new(r.name()))
+            .collect()
     }
 }

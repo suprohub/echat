@@ -10,7 +10,7 @@ pub struct EChat {
     #[serde(skip)]
     rt: Runtime,
     #[serde(skip)]
-    matrix_client: LoginOption<MatrixClient>,
+    client: LoginOption,
 }
 
 impl Default for EChat {
@@ -23,7 +23,7 @@ impl Default for EChat {
             .unwrap();
 
         Self {
-            matrix_client: Default::default(),
+            client: Default::default(),
             rt,
         }
     }
@@ -40,7 +40,12 @@ impl EChat {
         if let Some(storage) = cc.storage {
             let mut echat: EChat = eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
 
-            echat.matrix_client = MatrixClient::load_from_storage(storage);
+            echat.client = MatrixClient::load_from_storage(storage);
+
+            if let LoginOption::LoggedIn(client) = &echat.client {
+                let client = client.clone();
+                echat.rt.spawn(async move { client.sync().await.unwrap() });
+            }
 
             echat
         } else {
@@ -53,14 +58,14 @@ impl eframe::App for EChat {
     /// Called by the frame work to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
-        if let LoginOption::LoggedIn(client) = &mut self.matrix_client {
-            self.rt.block_on(client.sync(storage)).unwrap();
+        if let LoginOption::LoggedIn(client) = &self.client {
+            client.save(storage).unwrap();
         }
     }
 
     /// Called each time the UI needs repainting, which may be many times per second.
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        match &mut self.matrix_client {
+        match &mut self.client {
             LoginOption::Auth { username, password } => {
                 let mut try_login = false;
 
@@ -76,7 +81,7 @@ impl eframe::App for EChat {
                 });
 
                 if try_login {
-                    self.matrix_client = LoginOption::LoggedIn(
+                    self.client = LoginOption::LoggedIn(
                         self.rt
                             .block_on(MatrixClient::login(
                                 frame.storage_mut().unwrap(),
@@ -99,8 +104,8 @@ impl eframe::App for EChat {
                 egui::SidePanel::new(Side::Left, "left_panel").show(ctx, |ui| {
                     ui.label("Chats");
 
-                    for room in client.client().rooms() {
-                        ui.label(room.name().unwrap_or("Unknown name".into()));
+                    for chat in client.chats() {
+                        ui.label(chat.name.unwrap_or("Unknown name".into()));
                     }
                 });
             }
