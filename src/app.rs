@@ -1,11 +1,9 @@
-use egui::panel::Side;
 use tokio::runtime::Runtime;
 
-use crate::clients::{LoginOption, matrix::MatrixClient};
+use crate::clients::{EventKind, LoginOption, matrix::MatrixClient};
 
-/// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
-#[serde(default)] // if we add new fields, give them default values when deserializing old state
+#[serde(default)]
 pub struct EChat {
     #[serde(skip)]
     rt: Runtime,
@@ -30,13 +28,10 @@ impl Default for EChat {
 }
 
 impl EChat {
-    /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // This is also where you can customize the look and feel of egui using
-        // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
 
-        // Load previous app state (if any).
-        // Note that you must enable the `persistence` feature for this to work.
+        egui_extras::install_image_loaders(&cc.egui_ctx);
+
         if let Some(storage) = cc.storage {
             let mut echat: EChat = eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
 
@@ -55,7 +50,6 @@ impl EChat {
 }
 
 impl eframe::App for EChat {
-    /// Called by the frame work to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
         if let LoginOption::LoggedIn(client) = &self.client {
@@ -63,7 +57,6 @@ impl eframe::App for EChat {
         }
     }
 
-    /// Called each time the UI needs repainting, which may be many times per second.
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         match &mut self.client {
             LoginOption::Auth { username, password } => {
@@ -94,19 +87,56 @@ impl eframe::App for EChat {
                 }
             }
             LoginOption::LoggedIn(client) => {
-                egui::CentralPanel::default().show(
-                    ctx,
-                    |ui| {
-                        if ui.button("Display name").clicked() {}
-                    },
-                );
-
-                egui::SidePanel::new(Side::Left, "left_panel").show(ctx, |ui| {
+                egui::SidePanel::left("left_panel").show(ctx, |ui| {
                     ui.label("Chats");
-
-                    for chat in client.chats() {
-                        ui.label(chat.name.unwrap_or("Unknown name".into()));
+                    for chat in client.get_chats() {
+                        let btn =
+                            ui.add(egui::Button::new(chat.name.as_deref().unwrap_or("Unnamed")));
+                        if btn.clicked() {
+                            let client = client.clone();
+                            let chat_id = chat.id.clone();
+                            self.rt.spawn(async move {
+                                log::info!("select start");
+                                client.select_chat(&chat_id).await.unwrap();
+                                log::info!("select stop");
+                            });
+                        }
+                        if let Some(avatar) = &chat.avatar_url {
+                            ui.image(avatar);
+                        }
                     }
+                });
+
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let groups = client.get_event_groups();
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for group in groups {
+                            for event in group.events {
+                                match event.kind {
+                                    EventKind::Message(content) => {
+                                        ui.horizontal(|ui| {
+                                            if let Some(avatar) = &group.avatar_url {
+                                                ui.image(avatar.clone() + ".png");
+                                            }
+
+                                            let response = ui.button(content);
+                                            if response.clicked_by(egui::PointerButton::Secondary) {
+                                                let client = client.clone();
+                                                //let msg_id = msg.id.clone();
+                                                ui.menu_button("title", |ui| {
+                                                    if ui.button("Delete").clicked() {
+                                                        self.rt.spawn(async move {
+                                                            //client.delete_message(&msg_id).await.unwrap();
+                                                        });
+                                                    }
+                                                });
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    });
                 });
             }
         }

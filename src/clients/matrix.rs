@@ -1,16 +1,21 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Result, anyhow};
-use egui::mutex::Mutex;
+use egui::{ahash::{HashMap, HashMapExt}, mutex::Mutex};
 use matrix_sdk::{
-    async_trait, authentication::matrix::MatrixSession, config::SyncSettings,
-    ruma::api::client::filter::FilterDefinition,
+    authentication::matrix::MatrixSession,
+    room::{MessagesOptions, Room},
+    ruma::{
+        api::client::filter::FilterDefinition, events::{AnyMessageLikeEventContent, AnySyncTimelineEvent}, RoomId, UInt, UserId
+    }, RoomMemberships,
 };
 use rand::{Rng, distr::Alphanumeric};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 
-use super::{Chat, Client, LoginOption};
+use super::{Chat, Client, Event, EventGroup, EventKind, LoginOption};
+
+type AsyncMutex<T> = tokio::sync::Mutex<T>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientSession {
@@ -32,7 +37,12 @@ pub struct MatrixClient {
     client: matrix_sdk::Client,
     sync_token: Mutex<Option<String>>,
     client_session: ClientSession,
+    avatar_cache: AsyncMutex<HashMap<String, Option<String>>>,
+    event_groups: Mutex<Vec<EventGroup>>,
+    selected_room: AsyncMutex<Option<Room>>,
+    pagination_token: Mutex<Option<String>>,
 }
+
 
 impl MatrixClient {
     pub async fn login(
@@ -43,14 +53,12 @@ impl MatrixClient {
     ) -> Result<Arc<Self>> {
         #[cfg(not(target_arch = "wasm32"))]
         let data_dir = dirs::data_dir().unwrap().join("echat");
-
         #[cfg(not(target_arch = "wasm32"))]
         let db_subfolder: String = rand::rng()
             .sample_iter(Alphanumeric)
             .take(7)
             .map(char::from)
             .collect();
-
         #[cfg(not(target_arch = "wasm32"))]
         let db_path = data_dir.join(db_subfolder);
 
@@ -99,14 +107,17 @@ impl MatrixClient {
             sync_token: None,
         };
 
-        let serialized = serde_json::to_string(&full_session)?;
-        storage.set_string("matrix_session", serialized);
+        storage.set_string("matrix_session", serde_json::to_string(&full_session)?);
         storage.flush();
 
         Ok(Arc::new(Self {
             client,
             sync_token: Mutex::new(None),
             client_session,
+            avatar_cache: AsyncMutex::default(),
+            event_groups: Mutex::default(),
+            selected_room: AsyncMutex::default(),
+            pagination_token: Mutex::default(),
         }))
     }
 
@@ -119,9 +130,8 @@ impl MatrixClient {
                 .build()
                 .unwrap();
 
-            rt.block_on(async {
-                let full_session: FullSession = serde_json::from_str(&serialized)
-                    .map_err(|e| anyhow!("Deserialization error: {}", e))?;
+            match rt.block_on(async {
+                let full_session: FullSession = serde_json::from_str(&serialized)?;
 
                 #[cfg(target_arch = "wasm32")]
                 let client = matrix_sdk::Client::builder()
@@ -145,32 +155,110 @@ impl MatrixClient {
 
                 client.restore_session(full_session.user_session).await?;
 
-                Ok(Arc::new(Self {
+                Ok::<_, anyhow::Error>(Arc::new(Self {
                     client,
                     sync_token: Mutex::new(full_session.sync_token),
                     client_session: full_session.client_session,
+                    avatar_cache: AsyncMutex::default(),
+                    event_groups: Mutex::default(),
+                    selected_room: AsyncMutex::default(),
+                    pagination_token: Mutex::default(),
                 }))
-            })
-            .map(|c| LoginOption::LoggedIn(c))
-            .unwrap_or_else(|_: anyhow::Error| LoginOption::default())
+            }) {
+                Ok(client) => LoginOption::LoggedIn(client),
+                Err(_) => LoginOption::default(),
+            }
         } else {
             LoginOption::default()
         }
     }
+
+    async fn get_avatar_url(&self, user_id: &UserId, room: &Room) -> Option<String> {
+        let mut cache = self.avatar_cache.lock().await;
+        if let Some(url) = cache.get(user_id.as_str()) {
+            return url.clone();
+        }
+
+        let members = room.members(RoomMemberships::ACTIVE).await.ok()?;
+        for member in members {
+            if member.user_id() == user_id {
+                let url = member.avatar_url().map(|u| u.to_string());
+                cache.insert(user_id.to_string(), url.clone());
+                return url;
+            }
+        }
+
+        None
+    }
+
+    async fn process_timeline_events(&self, timeline: &matrix_sdk::room::Messages, room: &Room) -> Result<()> {
+        let mut groups_map = HashMap::new();
+
+        for event in &timeline.chunk {
+            if let AnySyncTimelineEvent::MessageLike(msg) = event.raw().deserialize()? {
+                let timestamp = msg.origin_server_ts().0.into();
+                let sender = msg.sender();
+
+                let member = room.get_member(sender).await?;
+                let display_name = member.and_then(|m| m.display_name().map(|s| s.to_owned()))
+                    .unwrap_or_else(|| sender.to_string());
+                let avatar_url = self.get_avatar_url(sender, room).await;
+
+                let event_type = match msg.original_content() {
+                    Some(AnyMessageLikeEventContent::Message(message)) => {
+                        EventKind::Message(message.text.iter().map(|t| t.body.clone()).collect())
+                    }
+                    Some(AnyMessageLikeEventContent::RoomMessage(message)) => {
+                        EventKind::Message(message.body().to_owned())
+                    }
+                    _ => continue,
+                };
+
+                let event = Event {
+                    timestamp,
+                    kind: event_type,
+                };
+
+                let entry = groups_map.entry(sender.to_string()).or_insert_with(|| EventGroup {
+                    user_id: sender.to_string(),
+                    display_name: display_name.clone(),
+                    avatar_url: avatar_url.clone(),
+                    events: Vec::new(),
+                });
+
+                entry.events.push(event);
+            }
+        }
+
+        let mut event_groups = self.event_groups.lock();
+        for new_group in groups_map.into_values() {
+            if let Some(existing_group) = event_groups.iter_mut().find(|g| g.user_id == new_group.user_id) {
+                existing_group.events.extend(new_group.events);
+            } else {
+                event_groups.push(new_group);
+            }
+        }
+
+        event_groups.sort_by(|a, b| {
+            a.events.first().map(|e| e.timestamp).cmp(&b.events.first().map(|e| e.timestamp))
+        });
+
+        Ok(())
+    }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl Client for MatrixClient {
     async fn sync(&self) -> Result<()> {
         let filter = FilterDefinition::with_lazy_loading();
-        let mut sync_settings = SyncSettings::default().filter(filter.into());
+        let mut sync_settings = matrix_sdk::config::SyncSettings::default().filter(filter.into());
 
         if let Some(token) = &*self.sync_token.lock() {
             sync_settings = sync_settings.token(token);
         }
 
         let response = self.client.sync_once(sync_settings).await?;
-        *self.sync_token.lock() = Some(response.next_batch.clone());
+        *self.sync_token.lock() = Some(response.next_batch);
         Ok(())
     }
 
@@ -194,11 +282,56 @@ impl Client for MatrixClient {
         Ok(())
     }
 
-    fn chats(&self) -> Vec<Chat> {
-        self.client
-            .rooms()
+    async fn select_chat(&self, chat_id: &str) -> Result<()> {
+        let room_id = RoomId::parse(chat_id)?;
+        let room = self.client.get_room(&room_id).ok_or_else(|| anyhow!("Room not found"))?;
+        
+        *self.event_groups.lock() = Vec::new();
+        *self.pagination_token.lock() = None;
+
+        let mut options = MessagesOptions::backward();
+        options.limit = UInt::new(20).unwrap();
+
+        let timeline = room.messages(options).await?;
+        self.process_timeline_events(&timeline, &room).await?;
+        *self.pagination_token.lock() = timeline.end.clone();
+        *self.selected_room.lock().await = Some(room);
+        Ok(())
+    }
+
+    async fn load_more_messages(&self) -> Result<()> {
+        let lock = self.selected_room.lock().await;
+        let room = lock.as_ref().ok_or_else(|| anyhow!("No room selected"))?;
+        let token = self.pagination_token.lock().clone();
+        
+        let mut options = MessagesOptions::backward();
+        options.limit = UInt::new(20).unwrap();
+        
+        let timeline = room.messages(options).await?;
+        self.process_timeline_events(&timeline, room).await?;
+        *self.pagination_token.lock() = timeline.end.clone();
+        Ok(())
+    }
+
+    async fn delete_message(&self, _message_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_event_groups(&self) -> Vec<EventGroup> {
+        self.event_groups.lock().clone()
+    }
+
+    fn get_chats(&self) -> Vec<Chat> {
+        self.client.rooms()
             .into_iter()
-            .map(|r| Chat::new(r.name()))
+            .filter_map(|room| {
+                let details = room.name()?;
+                Some(Chat {
+                    id: room.room_id().to_string(),
+                    name: Some(details),
+                    avatar_url: room.avatar_url().map(|u| u.to_string()),
+                })
+            })
             .collect()
     }
 }
