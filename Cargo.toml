@@ -49,6 +49,7 @@ tokio = { version = "1.44", features = ["macros", "rt"] }
 tokio_with_wasm = "0.8"
 wasm-bindgen-futures = "0.4"
 web-sys = "0.3.70"           # to access the DOM (to hide the loading text)
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [profile.release]
 opt-level = 2 # fast and small wasm
