@@ -45,6 +45,7 @@ simple_logger = "5.0"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 matrix-sdk = { version = "0.10", default-features = false, features = ["automatic-room-key-forwarding", "native-tls", "e2e-encryption", "qrcode", "indexeddb"] }
 tokio = { version = "1.44", features = ["macros", "rt"] }
+tokio_with_wasm = "0.8"
 wasm-bindgen-futures = "0.4"
 web-sys = "0.3.70"           # to access the DOM (to hide the loading text)
 

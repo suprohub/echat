@@ -59,6 +59,11 @@ impl eframe::App for EChat {
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if ctx.input(|i| i.viewport().close_requested()) {
+            self.save(frame.storage_mut().unwrap());
+            std::process::exit(0); // temp solution
+        }
+        
         match &mut self.client {
             LoginOption::Auth { username, password } => {
                 let mut try_login = false;
@@ -96,10 +101,12 @@ impl eframe::App for EChat {
                             if btn.clicked() {
                                 let client = client.clone();
                                 let chat_id = chat.id.clone();
+                                let ctx = ctx.clone();
                                 self.rt.spawn(async move {
                                     log::info!("select start");
                                     client.select_chat(&chat_id).await.unwrap();
                                     log::info!("select stop");
+                                    ctx.request_repaint();
                                 });
                             }
                             if let Some(avatar) = &chat.avatar_url {
