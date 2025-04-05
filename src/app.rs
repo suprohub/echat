@@ -1,7 +1,12 @@
-use egui::{Color32, Style};
+use std::{borrow::Cow, sync::Arc};
+
+use parking_lot::Mutex;
 use tokio::runtime::Runtime;
 
-use crate::{clients::{matrix::MatrixClient, EventKind, LoginOption}, message::{MessageStyle, MessageWidget}};
+use crate::{
+    clients::{Chat, EventGroup, LoginOption, matrix::MatrixClient},
+    message::{MessageStyle, MessageWidget},
+};
 
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)]
@@ -10,6 +15,9 @@ pub struct EChat {
     rt: Runtime,
     #[serde(skip)]
     client: LoginOption,
+
+    chats: Arc<Mutex<Vec<Chat>>>,
+    event_groups: Arc<Mutex<Vec<EventGroup>>>,
 }
 
 impl Default for EChat {
@@ -23,6 +31,8 @@ impl Default for EChat {
 
         Self {
             client: Default::default(),
+            chats: Default::default(),
+            event_groups: Default::default(),
             rt,
         }
     }
@@ -30,7 +40,6 @@ impl Default for EChat {
 
 impl EChat {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
         if let Some(storage) = cc.storage {
@@ -40,7 +49,14 @@ impl EChat {
 
             if let LoginOption::LoggedIn(client) = &echat.client {
                 let client = client.clone();
-                echat.rt.spawn(async move { client.sync().await.unwrap() });
+                let chats = echat.chats.clone();
+
+                echat.rt.spawn(async move {
+                    client.sync().await.unwrap();
+
+                    let client_chats = client.get_chats().await.unwrap();
+                    *chats.lock() = client_chats;
+                });
             }
 
             echat
@@ -63,7 +79,7 @@ impl eframe::App for EChat {
             self.save(frame.storage_mut().unwrap());
             std::process::exit(0); // temp solution
         }
-        
+
         match &mut self.client {
             LoginOption::Auth { username, password } => {
                 let mut try_login = false;
@@ -96,35 +112,40 @@ impl eframe::App for EChat {
                 egui::SidePanel::left("left_panel").show(ctx, |ui| {
                     ui.label("Chats");
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        for chat in client.get_chats() {
-                            let btn = ui.add(egui::Button::new(chat.name.as_deref().unwrap_or("Unnamed")));
+                        for chat in self.chats.lock().iter() {
+                            let btn = ui
+                                .add(egui::Button::new(chat.name.as_deref().unwrap_or("Unnamed")));
                             if btn.clicked() {
                                 let client = client.clone();
+                                let event_groups = self.event_groups.clone();
                                 let chat_id = chat.id.clone();
                                 let ctx = ctx.clone();
                                 self.rt.spawn(async move {
                                     log::info!("select start");
                                     client.select_chat(&chat_id).await.unwrap();
+                                    let client_event_groups =
+                                        client.get_event_groups().await.unwrap();
+                                    *event_groups.lock() = client_event_groups;
                                     log::info!("select stop");
                                     ctx.request_repaint();
                                 });
                             }
-                            if let Some(avatar) = &chat.avatar_url {
-                                ui.image(avatar);
+                            if let Some(avatar) = &chat.avatar {
+                                ui.image((Cow::default(), avatar.clone()));
                             }
                         }
                     });
                 });
+
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let current_user_id = client.get_user_id().to_string();
-                    let groups = client.get_event_groups();
-                    
+
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        for group in groups {
+                        for group in self.event_groups.lock().iter() {
                             let widget = MessageWidget::new(
                                 MessageStyle::default(),
                                 group.clone(),
-                                current_user_id.clone()
+                                current_user_id.clone(),
                             );
                             widget.show(ui);
                         }

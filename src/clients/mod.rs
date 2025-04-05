@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 pub mod matrix;
 
@@ -26,34 +27,34 @@ pub trait Client: Send + Sync {
     async fn select_chat(&self, chat_id: &str) -> Result<()>;
     async fn load_more_messages(&self) -> Result<()>;
     async fn delete_message(&self, message_id: &str) -> Result<()>;
-    fn get_event_groups(&self) -> Vec<EventGroup>;
-    fn get_chats(&self) -> Vec<Chat>;
+    async fn get_event_groups(&self) -> Result<Vec<EventGroup>>;
+    async fn get_chats(&self) -> Result<Vec<Chat>>;
     fn get_user_id(&self) -> &str;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chat {
     pub id: String,
     pub name: Option<String>,
-    pub avatar_url: Option<String>,
+    pub avatar: Option<Arc<[u8]>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventGroup {
     pub user_id: String,
     pub display_name: String,
-    pub avatar_url: Option<String>,
+    pub avatar: Option<Arc<[u8]>>,
     pub events: Vec<Event>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: String,
     pub timestamp: u64,
     pub kind: EventKind,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EventKind {
     Message(String),
     // Другие типы событий можно добавить здесь

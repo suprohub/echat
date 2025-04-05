@@ -1,17 +1,14 @@
-use egui::{epaint::CornerRadiusF32, Align, Color32, Layout, Stroke, Ui, Vec2, Widget};
-use chrono::{TimeZone, Utc};
-use crate::clients::{Event, EventGroup, EventKind};
+use std::{borrow::Cow, sync::Arc};
 
-#[derive(Clone, PartialEq)]
+use crate::clients::{Event, EventGroup, EventKind};
+use chrono::{TimeZone, Utc};
+use egui::{Align, Color32, Layout, Stroke, Ui, Vec2, Widget, epaint::CornerRadiusF32};
+
+#[derive(Clone, PartialEq, Default)]
 pub enum MessageSide {
+    #[default]
     Left,
     Right,
-}
-
-impl Default for MessageSide {
-    fn default() -> Self {
-        MessageSide::Left
-    }
 }
 
 #[derive(Clone)]
@@ -33,7 +30,7 @@ impl Default for MessageStyle {
     fn default() -> Self {
         let visuals = egui::Visuals::default();
         let button_bg = visuals.widgets.inactive.bg_fill;
-        
+
         let (self_bg, other_bg) = if visuals.dark_mode {
             let self_bg = button_bg.linear_multiply(0.8);
             let other_bg = button_bg.linear_multiply(0.6);
@@ -77,7 +74,7 @@ impl MessageWidget {
 
     pub fn show(&self, ui: &mut Ui) {
         let is_self = self.group.user_id == self.current_user_id;
-        let has_avatar = self.group.avatar_url.is_some();
+        let has_avatar = self.group.avatar.is_some();
         let avatar_size = self.style.avatar_size;
 
         ui.vertical(|ui| {
@@ -105,7 +102,7 @@ impl MessageWidget {
                         MessageSide::Left => {
                             if !is_self {
                                 if is_last && has_avatar {
-                                    self.avatar(ui, self.group.avatar_url.as_ref().unwrap());
+                                    self.avatar(ui, self.group.avatar.clone().unwrap());
                                 } else {
                                     ui.add_space(avatar_size + 8.0);
                                 }
@@ -130,12 +127,24 @@ impl MessageWidget {
         is_self: bool,
     ) -> egui::Response {
         let style = &self.style;
-        let bg_color = if is_self { style.self_bg } else { style.other_bg };
-        
+        let bg_color = if is_self {
+            style.self_bg
+        } else {
+            style.other_bg
+        };
+
         let mut rounding = CornerRadiusF32 {
-            nw: if is_first || is_only { style.corner_radius } else { 2.0 },
+            nw: if is_first || is_only {
+                style.corner_radius
+            } else {
+                2.0
+            },
             ne: style.corner_radius,
-            sw: if is_last || is_only { style.corner_radius } else { 2.0 },
+            sw: if is_last || is_only {
+                style.corner_radius
+            } else {
+                2.0
+            },
             se: style.corner_radius,
         };
 
@@ -154,39 +163,39 @@ impl MessageWidget {
             .corner_radius(rounding)
             .stroke(style.stroke);
 
-        let response = frame.show(ui, |ui| {
-            ui.vertical(|ui| {
-                if is_first && !is_self {
-                    ui.label(
-                        egui::RichText::new(&self.group.display_name)
-                            .color(style.name_color)
-                            .size(12.0),
-                    );
-                }
-
-                match &event.kind {
-                    EventKind::Message(content) => {
-                        ui.label(egui::RichText::new(content).color(style.text_color));
+        frame
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    if is_first && !is_self {
+                        ui.label(
+                            egui::RichText::new(&self.group.display_name)
+                                .color(style.name_color)
+                                .size(12.0),
+                        );
                     }
-                }
 
-                ui.horizontal(|ui| {
-                    ui.add_space(ui.available_width() - 40.0);
-                    ui.label(
-                        egui::RichText::new(format_time(event.timestamp))
-                            .color(style.time_color)
-                            .size(10.0),
-                    );
-                });
+                    match &event.kind {
+                        EventKind::Message(content) => {
+                            ui.label(egui::RichText::new(content).color(style.text_color));
+                        }
+                    }
+
+                    ui.horizontal(|ui| {
+                        ui.add_space(ui.available_width() - 40.0);
+                        ui.label(
+                            egui::RichText::new(format_time(event.timestamp))
+                                .color(style.time_color)
+                                .size(10.0),
+                        );
+                    });
+                })
             })
-        }).response;
-
-        response
+            .response
     }
 
-    fn avatar(&self, ui: &mut Ui, avatar_url: &str) {
+    fn avatar(&self, ui: &mut Ui, avatar: Arc<[u8]>) {
         let size = self.style.avatar_size;
-        egui::Image::new(avatar_url)
+        egui::Image::new((Cow::default(), avatar))
             .corner_radius(CornerRadiusF32::same(size / 2.0))
             .fit_to_exact_size(Vec2::splat(size))
             .ui(ui);
