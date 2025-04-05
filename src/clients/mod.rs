@@ -28,6 +28,7 @@ pub trait Client: Send + Sync {
     async fn delete_message(&self, message_id: &str) -> Result<()>;
     fn get_event_groups(&self) -> Vec<EventGroup>;
     fn get_chats(&self) -> Vec<Chat>;
+    fn get_user_id(&self) -> &str;
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +48,7 @@ pub struct EventGroup {
 
 #[derive(Debug, Clone)]
 pub struct Event {
+    pub id: String,
     pub timestamp: u64,
     pub kind: EventKind,
 }

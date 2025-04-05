@@ -1,6 +1,7 @@
+use egui::{Color32, Style};
 use tokio::runtime::Runtime;
 
-use crate::clients::{EventKind, LoginOption, matrix::MatrixClient};
+use crate::{clients::{matrix::MatrixClient, EventKind, LoginOption}, message::{MessageStyle, MessageWidget}};
 
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)]
@@ -89,52 +90,36 @@ impl eframe::App for EChat {
             LoginOption::LoggedIn(client) => {
                 egui::SidePanel::left("left_panel").show(ctx, |ui| {
                     ui.label("Chats");
-                    for chat in client.get_chats() {
-                        let btn =
-                            ui.add(egui::Button::new(chat.name.as_deref().unwrap_or("Unnamed")));
-                        if btn.clicked() {
-                            let client = client.clone();
-                            let chat_id = chat.id.clone();
-                            self.rt.spawn(async move {
-                                log::info!("select start");
-                                client.select_chat(&chat_id).await.unwrap();
-                                log::info!("select stop");
-                            });
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for chat in client.get_chats() {
+                            let btn = ui.add(egui::Button::new(chat.name.as_deref().unwrap_or("Unnamed")));
+                            if btn.clicked() {
+                                let client = client.clone();
+                                let chat_id = chat.id.clone();
+                                self.rt.spawn(async move {
+                                    log::info!("select start");
+                                    client.select_chat(&chat_id).await.unwrap();
+                                    log::info!("select stop");
+                                });
+                            }
+                            if let Some(avatar) = &chat.avatar_url {
+                                ui.image(avatar);
+                            }
                         }
-                        if let Some(avatar) = &chat.avatar_url {
-                            ui.image(avatar);
-                        }
-                    }
+                    });
                 });
-
                 egui::CentralPanel::default().show(ctx, |ui| {
+                    let current_user_id = client.get_user_id().to_string();
                     let groups = client.get_event_groups();
+                    
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         for group in groups {
-                            for event in group.events {
-                                match event.kind {
-                                    EventKind::Message(content) => {
-                                        ui.horizontal(|ui| {
-                                            if let Some(avatar) = &group.avatar_url {
-                                                ui.image(avatar.clone() + ".png");
-                                            }
-
-                                            let response = ui.button(content);
-                                            if response.clicked_by(egui::PointerButton::Secondary) {
-                                                let client = client.clone();
-                                                //let msg_id = msg.id.clone();
-                                                ui.menu_button("title", |ui| {
-                                                    if ui.button("Delete").clicked() {
-                                                        self.rt.spawn(async move {
-                                                            //client.delete_message(&msg_id).await.unwrap();
-                                                        });
-                                                    }
-                                                });
-                                            }
-                                        });
-                                    }
-                                }
-                            }
+                            let widget = MessageWidget::new(
+                                MessageStyle::default(),
+                                group.clone(),
+                                current_user_id.clone()
+                            );
+                            widget.show(ui);
                         }
                     });
                 });

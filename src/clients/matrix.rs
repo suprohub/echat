@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Result, anyhow};
-use egui::{ahash::{HashMap, HashMapExt}, mutex::Mutex};
+use egui::{ahash::{HashMap, HashSet}, mutex::Mutex};
 use matrix_sdk::{
     authentication::matrix::MatrixSession,
     room::{MessagesOptions, Room},
@@ -41,6 +41,7 @@ pub struct MatrixClient {
     event_groups: Mutex<Vec<EventGroup>>,
     selected_room: AsyncMutex<Option<Room>>,
     pagination_token: Mutex<Option<String>>,
+    processed_events: AsyncMutex<HashSet<String>>,
 }
 
 
@@ -118,6 +119,7 @@ impl MatrixClient {
             event_groups: Mutex::default(),
             selected_room: AsyncMutex::default(),
             pagination_token: Mutex::default(),
+            processed_events: Default::default(),
         }))
     }
 
@@ -163,6 +165,7 @@ impl MatrixClient {
                     event_groups: Mutex::default(),
                     selected_room: AsyncMutex::default(),
                     pagination_token: Mutex::default(),
+                    processed_events: Default::default(),
                 }))
             }) {
                 Ok(client) => LoginOption::LoggedIn(client),
@@ -191,19 +194,35 @@ impl MatrixClient {
         None
     }
 
-    async fn process_timeline_events(&self, timeline: &matrix_sdk::room::Messages, room: &Room) -> Result<()> {
-        let mut groups_map = HashMap::new();
-
-        for event in &timeline.chunk {
+    async fn process_timeline_events(
+        &self,
+        timeline: &matrix_sdk::room::Messages,
+        room: &Room,
+        prepend: bool,
+    ) -> Result<()> {
+        let mut new_groups = Vec::new();
+        let mut current_group: Option<EventGroup> = None;
+        let mut processed_events = self.processed_events.lock().await;
+    
+        for event in timeline.chunk.iter().rev() { // Обрабатываем в обратном порядке для backward пагинации
             if let AnySyncTimelineEvent::MessageLike(msg) = event.raw().deserialize()? {
+                let event_id = msg.event_id().to_string();
+                
+                // Пропускаем уже обработанные события
+                if processed_events.contains(&event_id) {
+                    continue;
+                }
+                processed_events.insert(event_id.clone());
+    
                 let timestamp = msg.origin_server_ts().0.into();
                 let sender = msg.sender();
-
+    
                 let member = room.get_member(sender).await?;
-                let display_name = member.and_then(|m| m.display_name().map(|s| s.to_owned()))
+                let display_name = member
+                    .and_then(|m| m.display_name().map(|s| s.to_owned()))
                     .unwrap_or_else(|| sender.to_string());
                 let avatar_url = self.get_avatar_url(sender, room).await;
-
+    
                 let event_type = match msg.original_content() {
                     Some(AnyMessageLikeEventContent::Message(message)) => {
                         EventKind::Message(message.text.iter().map(|t| t.body.clone()).collect())
@@ -213,36 +232,47 @@ impl MatrixClient {
                     }
                     _ => continue,
                 };
-
+    
                 let event = Event {
+                    id: event_id,
                     timestamp,
                     kind: event_type,
                 };
-
-                let entry = groups_map.entry(sender.to_string()).or_insert_with(|| EventGroup {
-                    user_id: sender.to_string(),
-                    display_name: display_name.clone(),
-                    avatar_url: avatar_url.clone(),
-                    events: Vec::new(),
-                });
-
-                entry.events.push(event);
+    
+                // Группируем последовательные сообщения от одного пользователя
+                match &mut current_group {
+                    Some(group) if group.user_id == sender.to_string() => {
+                        group.events.push(event);
+                    }
+                    _ => {
+                        if let Some(group) = current_group.take() {
+                            new_groups.push(group);
+                        }
+                        current_group = Some(EventGroup {
+                            user_id: sender.to_string(),
+                            display_name: display_name.clone(),
+                            avatar_url: avatar_url.clone(),
+                            events: vec![event],
+                        });
+                    }
+                }
             }
         }
-
+    
+        if let Some(group) = current_group {
+            new_groups.push(group);
+        }
+    
         let mut event_groups = self.event_groups.lock();
-        for new_group in groups_map.into_values() {
-            if let Some(existing_group) = event_groups.iter_mut().find(|g| g.user_id == new_group.user_id) {
-                existing_group.events.extend(new_group.events);
-            } else {
-                event_groups.push(new_group);
+        if prepend {
+            new_groups.reverse();
+            for group in new_groups {
+                event_groups.insert(0, group);
             }
+        } else {
+            event_groups.extend(new_groups);
         }
-
-        event_groups.sort_by(|a, b| {
-            a.events.first().map(|e| e.timestamp).cmp(&b.events.first().map(|e| e.timestamp))
-        });
-
+    
         Ok(())
     }
 }
@@ -252,15 +282,31 @@ impl Client for MatrixClient {
     async fn sync(&self) -> Result<()> {
         let filter = FilterDefinition::with_lazy_loading();
         let mut sync_settings = matrix_sdk::config::SyncSettings::default().filter(filter.into());
-
+    
         if let Some(token) = &*self.sync_token.lock() {
             sync_settings = sync_settings.token(token);
         }
-
+    
         let response = self.client.sync_once(sync_settings).await?;
         *self.sync_token.lock() = Some(response.next_batch);
+    
+        for (room_id, room_info) in response.rooms.join {
+            let room = self.client.get_room(&room_id).ok_or_else(|| anyhow!("Room not found"))?;
+            let timeline = room_info.timeline;
+    
+            let messages = matrix_sdk::room::Messages {
+                chunk: timeline.events,
+                start: timeline.prev_batch.clone().unwrap(),
+                end: timeline.prev_batch,
+                state: Vec::new(),
+            };
+    
+            self.process_timeline_events(&messages, &room, false).await?;
+        }
+    
         Ok(())
     }
+    
 
     fn save(&self, storage: &mut dyn eframe::Storage) -> Result<()> {
         let user_session = self
@@ -288,12 +334,13 @@ impl Client for MatrixClient {
         
         *self.event_groups.lock() = Vec::new();
         *self.pagination_token.lock() = None;
-
+        self.processed_events.lock().await.clear();
+    
         let mut options = MessagesOptions::backward();
         options.limit = UInt::new(20).unwrap();
-
+    
         let timeline = room.messages(options).await?;
-        self.process_timeline_events(&timeline, &room).await?;
+        self.process_timeline_events(&timeline, &room, true).await?;
         *self.pagination_token.lock() = timeline.end.clone();
         *self.selected_room.lock().await = Some(room);
         Ok(())
@@ -302,13 +349,12 @@ impl Client for MatrixClient {
     async fn load_more_messages(&self) -> Result<()> {
         let lock = self.selected_room.lock().await;
         let room = lock.as_ref().ok_or_else(|| anyhow!("No room selected"))?;
-        let token = self.pagination_token.lock().clone();
         
         let mut options = MessagesOptions::backward();
         options.limit = UInt::new(20).unwrap();
         
         let timeline = room.messages(options).await?;
-        self.process_timeline_events(&timeline, room).await?;
+        self.process_timeline_events(&timeline, room, true).await?;
         *self.pagination_token.lock() = timeline.end.clone();
         Ok(())
     }
@@ -333,5 +379,9 @@ impl Client for MatrixClient {
                 })
             })
             .collect()
+    }
+
+    fn get_user_id(&self) -> &str {
+        self.client.user_id().unwrap().as_str()
     }
 }

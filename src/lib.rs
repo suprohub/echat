@@ -2,4 +2,6 @@
 
 mod app;
 mod clients;
+pub mod message;
+
 pub use app::EChat;
