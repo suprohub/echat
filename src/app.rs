@@ -17,7 +17,6 @@ pub struct EChat {
     client: LoginOption,
 
     chats: Arc<Mutex<Vec<Chat>>>,
-    event_groups: Arc<Mutex<Vec<EventGroup>>>,
 }
 
 impl Default for EChat {
@@ -32,7 +31,6 @@ impl Default for EChat {
         Self {
             client: Default::default(),
             chats: Default::default(),
-            event_groups: Default::default(),
             rt,
         }
     }
@@ -117,14 +115,11 @@ impl eframe::App for EChat {
                                 .add(egui::Button::new(chat.name.as_deref().unwrap_or("Unnamed")));
                             if btn.clicked() {
                                 let client = client.clone();
-                                let event_groups = self.event_groups.clone();
                                 let chat_id = chat.id.clone();
                                 let ctx = ctx.clone();
                                 self.rt.spawn(async move {
                                     log::info!("select start");
                                     client.select_chat(&chat_id).await.unwrap();
-                                    let client_event_groups = client.event_groups().await.unwrap();
-                                    *event_groups.lock() = client_event_groups;
                                     log::info!("select stop");
                                     ctx.request_repaint();
                                 });
@@ -140,7 +135,7 @@ impl eframe::App for EChat {
                     let current_user_id = client.self_id().to_string();
 
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        for group in self.event_groups.lock().iter() {
+                        for group in client.event_groups().unwrap().lock().iter() {
                             let widget = MessageWidget::new(
                                 MessageStyle::default(),
                                 group.clone(),

@@ -1,10 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Result, anyhow};
-use egui::{
-    ahash::{HashMap, HashSet},
-    mutex::Mutex,
-};
+use egui::ahash::{HashMap, HashSet};
 use matrix_sdk::{
     RoomMemberships,
     authentication::matrix::MatrixSession,
@@ -16,6 +13,7 @@ use matrix_sdk::{
         events::{AnyMessageLikeEventContent, AnySyncTimelineEvent},
     },
 };
+use parking_lot::Mutex;
 use rand::{Rng, distr::Alphanumeric};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
@@ -44,8 +42,7 @@ pub struct MatrixClient {
     client: matrix_sdk::Client,
     sync_token: Mutex<Option<String>>,
     client_session: ClientSession,
-    avatar_cache: AsyncMutex<HashMap<String, Option<String>>>,
-    event_groups: Mutex<Vec<EventGroup>>,
+    event_groups: Arc<Mutex<Vec<EventGroup>>>,
     selected_room: AsyncMutex<Option<Room>>,
     pagination_token: Mutex<Option<String>>,
     processed_events: AsyncMutex<HashSet<String>>,
@@ -121,10 +118,9 @@ impl MatrixClient {
             client,
             sync_token: Mutex::new(None),
             client_session,
-            avatar_cache: AsyncMutex::default(),
-            event_groups: Mutex::default(),
-            selected_room: AsyncMutex::default(),
-            pagination_token: Mutex::default(),
+            event_groups: Default::default(),
+            selected_room: Default::default(),
+            pagination_token: Default::default(),
             processed_events: Default::default(),
         }))
     }
@@ -167,10 +163,9 @@ impl MatrixClient {
                     client,
                     sync_token: Mutex::new(full_session.sync_token),
                     client_session: full_session.client_session,
-                    avatar_cache: AsyncMutex::default(),
-                    event_groups: Mutex::default(),
-                    selected_room: AsyncMutex::default(),
-                    pagination_token: Mutex::default(),
+                    event_groups: Default::default(),
+                    selected_room: Default::default(),
+                    pagination_token: Default::default(),
                     processed_events: Default::default(),
                 }))
             }) {
@@ -180,24 +175,6 @@ impl MatrixClient {
         } else {
             LoginOption::default()
         }
-    }
-
-    async fn get_avatar_url(&self, user_id: &UserId, room: &Room) -> Option<String> {
-        let mut cache = self.avatar_cache.lock().await;
-        if let Some(url) = cache.get(user_id.as_str()) {
-            return url.clone();
-        }
-
-        let members = room.members(RoomMemberships::ACTIVE).await.ok()?;
-        for member in members {
-            if member.user_id() == user_id {
-                let url = member.avatar_url().map(|u| u.to_string());
-                cache.insert(user_id.to_string(), url.clone());
-                return url;
-            }
-        }
-
-        None
     }
 
     async fn process_timeline_events(
@@ -211,11 +188,9 @@ impl MatrixClient {
         let mut processed_events = self.processed_events.lock().await;
 
         for event in timeline.chunk.iter().rev() {
-            // Обрабатываем в обратном порядке для backward пагинации
             if let AnySyncTimelineEvent::MessageLike(msg) = event.raw().deserialize()? {
                 let event_id = msg.event_id().to_string();
 
-                // Пропускаем уже обработанные события
                 if processed_events.contains(&event_id) {
                     continue;
                 }
@@ -251,7 +226,6 @@ impl MatrixClient {
                     kind: event_type,
                 };
 
-                // Группируем последовательные сообщения от одного пользователя
                 match &mut current_group {
                     Some(group) if group.user_id == *sender => {
                         group.events.push(event);
@@ -381,8 +355,8 @@ impl Client for MatrixClient {
         Ok(())
     }
 
-    async fn event_groups(&self) -> Result<Vec<EventGroup>> {
-        Ok(self.event_groups.lock().clone())
+    fn event_groups(&self) -> Result<Arc<Mutex<Vec<EventGroup>>>> {
+        Ok(self.event_groups.clone())
     }
 
     async fn chats(&self) -> Result<Vec<Chat>> {

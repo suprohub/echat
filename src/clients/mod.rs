@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 pub mod matrix;
@@ -28,7 +29,7 @@ pub trait Client: Send + Sync {
     async fn chats(&self) -> Result<Vec<Chat>>;
     async fn select_chat(&self, chat_id: &str) -> Result<()>;
     async fn load_more_events(&self) -> Result<()>;
-    async fn event_groups(&self) -> Result<Vec<EventGroup>>;
+    fn event_groups(&self) -> Result<Arc<Mutex<Vec<EventGroup>>>>;
 
     async fn delete_event(&self, message_id: &str) -> Result<()>;
 
