@@ -54,7 +54,7 @@ impl EChat {
                 echat.rt.spawn(async move {
                     client.sync().await.unwrap();
 
-                    let client_chats = client.get_chats().await.unwrap();
+                    let client_chats = client.chats().await.unwrap();
                     *chats.lock() = client_chats;
                 });
             }
@@ -123,8 +123,7 @@ impl eframe::App for EChat {
                                 self.rt.spawn(async move {
                                     log::info!("select start");
                                     client.select_chat(&chat_id).await.unwrap();
-                                    let client_event_groups =
-                                        client.get_event_groups().await.unwrap();
+                                    let client_event_groups = client.event_groups().await.unwrap();
                                     *event_groups.lock() = client_event_groups;
                                     log::info!("select stop");
                                     ctx.request_repaint();
@@ -138,7 +137,7 @@ impl eframe::App for EChat {
                 });
 
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    let current_user_id = client.get_user_id().to_string();
+                    let current_user_id = client.self_id().to_string();
 
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         for group in self.event_groups.lock().iter() {

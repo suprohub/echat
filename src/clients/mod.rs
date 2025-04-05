@@ -24,12 +24,15 @@ impl Default for LoginOption {
 pub trait Client: Send + Sync {
     async fn sync(&self) -> Result<()>;
     fn save(&self, storage: &mut dyn eframe::Storage) -> Result<()>;
+
+    async fn chats(&self) -> Result<Vec<Chat>>;
     async fn select_chat(&self, chat_id: &str) -> Result<()>;
-    async fn load_more_messages(&self) -> Result<()>;
-    async fn delete_message(&self, message_id: &str) -> Result<()>;
-    async fn get_event_groups(&self) -> Result<Vec<EventGroup>>;
-    async fn get_chats(&self) -> Result<Vec<Chat>>;
-    fn get_user_id(&self) -> &str;
+    async fn load_more_events(&self) -> Result<()>;
+    async fn event_groups(&self) -> Result<Vec<EventGroup>>;
+
+    async fn delete_event(&self, message_id: &str) -> Result<()>;
+
+    fn self_id(&self) -> &str;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

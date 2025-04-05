@@ -364,7 +364,7 @@ impl Client for MatrixClient {
         Ok(())
     }
 
-    async fn load_more_messages(&self) -> Result<()> {
+    async fn load_more_events(&self) -> Result<()> {
         let lock = self.selected_room.lock().await;
         let room = lock.as_ref().ok_or_else(|| anyhow!("No room selected"))?;
 
@@ -377,15 +377,15 @@ impl Client for MatrixClient {
         Ok(())
     }
 
-    async fn delete_message(&self, _message_id: &str) -> Result<()> {
+    async fn delete_event(&self, _message_id: &str) -> Result<()> {
         Ok(())
     }
 
-    async fn get_event_groups(&self) -> Result<Vec<EventGroup>> {
+    async fn event_groups(&self) -> Result<Vec<EventGroup>> {
         Ok(self.event_groups.lock().clone())
     }
 
-    async fn get_chats(&self) -> Result<Vec<Chat>> {
+    async fn chats(&self) -> Result<Vec<Chat>> {
         let rooms = self.client.rooms();
         let mut chats = Vec::with_capacity(rooms.capacity());
         for room in rooms {
@@ -399,7 +399,7 @@ impl Client for MatrixClient {
         Ok(chats)
     }
 
-    fn get_user_id(&self) -> &str {
+    fn self_id(&self) -> &str {
         self.client.user_id().unwrap().as_str()
     }
 }
