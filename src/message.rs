@@ -2,6 +2,7 @@ use crate::clients::{Event, EventGroup, EventKind};
 use chrono::{TimeZone, Utc};
 use egui::{Align, Color32, Layout, Stroke, Ui, Vec2, Widget, epaint::CornerRadiusF32};
 
+/// Defines which side messages should appear on
 #[derive(Clone, PartialEq, Default)]
 pub enum MessageSide {
     #[default]
@@ -9,6 +10,7 @@ pub enum MessageSide {
     Right,
 }
 
+/// Style configuration for message bubbles
 #[derive(Clone)]
 pub struct MessageStyle {
     pub self_bg: Color32,
@@ -47,6 +49,7 @@ impl Default for MessageStyle {
 }
 
 impl MessageStyle {
+    /// Calculate background colors for self and other messages based on theme
     fn calculate_backgrounds(base: Color32, dark_mode: bool) -> (Color32, Color32) {
         if dark_mode {
             (base.linear_multiply(0.8), base.linear_multiply(0.6))
@@ -56,16 +59,19 @@ impl MessageStyle {
     }
 }
 
+/// Widget for rendering message bubbles
 pub struct MessageWidget {
     style: MessageStyle,
     group: EventGroup,
 }
 
 impl MessageWidget {
+    /// Create a new message widget with the given style and event group
     pub fn new(style: MessageStyle, group: EventGroup) -> Self {
         Self { style, group }
     }
 
+    /// Display the message group in the UI
     pub fn show(&self, ui: &mut Ui) {
         let event_count = self.group.events.len();
 
@@ -79,6 +85,8 @@ impl MessageWidget {
             ui.add_space(self.style.group_spacing);
         });
     }
+
+    // Rendering methods ---------------------------------------------------
 
     fn render_message_row(&self, ui: &mut Ui, event: &Event, is_first: bool, is_last: bool) {
         ui.horizontal(|ui| {
@@ -174,6 +182,21 @@ impl MessageWidget {
         });
     }
 
+    fn render_avatar(&self, ui: &mut Ui) {
+        if let Some(avatar) = &self.group.avatar {
+            let size = self.style.avatar_size;
+            egui::Image::from_bytes(
+                format!("user-avatar-{}", self.group.user_id),
+                avatar.clone(),
+            )
+            .fit_to_exact_size(Vec2::splat(size))
+            .corner_radius(size / 2.0)
+            .ui(ui);
+        } else {
+            ui.add_space(self.style.avatar_size + 8.0);
+        }
+    }
+
     fn calculate_bubble_rounding(&self, is_first: bool, is_last: bool) -> CornerRadiusF32 {
         let is_only = is_first && is_last;
         let radius = self.style.corner_radius;
@@ -205,23 +228,9 @@ impl MessageWidget {
             CornerRadiusF32 { nw, ne, sw, se }
         }
     }
-
-    fn render_avatar(&self, ui: &mut Ui) {
-        if let Some(avatar) = &self.group.avatar {
-            let size = self.style.avatar_size;
-            egui::Image::from_bytes(
-                "user-avatar-".to_owned() + self.group.user_id.as_str(),
-                avatar.clone(),
-            )
-            .fit_to_exact_size(Vec2::splat(size))
-            .corner_radius(size / 2.0)
-            .ui(ui);
-        } else {
-            ui.add_space(self.style.avatar_size + 8.0);
-        }
-    }
 }
 
+/// Format timestamp as HH:MM
 fn format_time(timestamp: u64) -> String {
     Utc.timestamp_opt(timestamp as i64, 0)
         .unwrap()
