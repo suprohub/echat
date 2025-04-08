@@ -1,14 +1,13 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Result, anyhow};
-use egui::ahash::{HashMap, HashSet};
+use egui::ahash::HashSet;
 use matrix_sdk::{
-    RoomMemberships,
     authentication::matrix::MatrixSession,
     media::MediaFormat,
     room::{MessagesOptions, Room},
     ruma::{
-        RoomId, UInt, UserId,
+        RoomId, UInt,
         api::client::filter::FilterDefinition,
         events::{AnyMessageLikeEventContent, AnySyncTimelineEvent},
     },
@@ -18,7 +17,7 @@ use rand::{Rng, distr::Alphanumeric};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 
-use super::{Chat, Client, Event, EventGroup, EventKind, LoginOption};
+use super::{Chat, Client, Event, EventGroup, LoginOption};
 
 type AsyncMutex<T> = tokio::sync::Mutex<T>;
 
@@ -56,15 +55,15 @@ impl MatrixClient {
         homeserver: &str,
     ) -> Result<Arc<Self>> {
         #[cfg(not(target_arch = "wasm32"))]
-        let data_dir = dirs::data_dir().unwrap().join("echat");
-        #[cfg(not(target_arch = "wasm32"))]
-        let db_subfolder: String = rand::rng()
-            .sample_iter(Alphanumeric)
-            .take(7)
-            .map(char::from)
-            .collect();
-        #[cfg(not(target_arch = "wasm32"))]
-        let db_path = data_dir.join(db_subfolder);
+        let db_path = {
+            let data_dir = dirs::data_dir().unwrap().join("echat");
+            let db_subfolder: String = rand::rng()
+                .sample_iter(Alphanumeric)
+                .take(7)
+                .map(char::from)
+                .collect();
+            data_dir.join(db_subfolder)
+        };
 
         let passphrase: String = rand::rng()
             .sample_iter(Alphanumeric)
@@ -72,19 +71,24 @@ impl MatrixClient {
             .map(char::from)
             .collect();
 
-        #[cfg(target_arch = "wasm32")]
-        let client = matrix_sdk::Client::builder()
-            .homeserver_url(homeserver)
-            .indexeddb_store("matrix_client_db", Some(&passphrase))
-            .build()
-            .await?;
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let client = matrix_sdk::Client::builder()
-            .homeserver_url(homeserver)
-            .sqlite_store(&db_path, Some(&passphrase))
-            .build()
-            .await?;
+        let client = {
+            #[cfg(target_arch = "wasm32")]
+            {
+                matrix_sdk::Client::builder()
+                    .homeserver_url(homeserver)
+                    .indexeddb_store("matrix_client_db", Some(&passphrase))
+                    .build()
+                    .await?
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                matrix_sdk::Client::builder()
+                    .homeserver_url(homeserver)
+                    .sqlite_store(&db_path, Some(&passphrase))
+                    .build()
+                    .await?
+            }
+        };
 
         client
             .matrix_auth()
@@ -95,7 +99,7 @@ impl MatrixClient {
         let user_session = client
             .matrix_auth()
             .session()
-            .ok_or_else(|| anyhow!("Login failed"))?
+            .ok_or_else(|| anyhow!("Ошибка входа"))?
             .clone();
 
         let client_session = ClientSession {
@@ -118,62 +122,68 @@ impl MatrixClient {
             client,
             sync_token: Mutex::new(None),
             client_session,
-            event_groups: Default::default(),
-            selected_room: Default::default(),
-            pagination_token: Default::default(),
-            processed_events: Default::default(),
+            event_groups: Arc::default(),
+            selected_room: AsyncMutex::default(),
+            pagination_token: Mutex::default(),
+            processed_events: AsyncMutex::default(),
         }))
     }
 
     pub fn load_from_storage(storage: &dyn eframe::Storage) -> LoginOption {
-        if let Some(serialized) = storage.get_string("matrix_session") {
-            #[cfg(not(target_arch = "wasm32"))]
-            let rt = Runtime::new().unwrap();
-            #[cfg(target_arch = "wasm32")]
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .build()
-                .unwrap();
+        let serialized = match storage.get_string("matrix_session") {
+            Some(s) => s,
+            None => return LoginOption::default(),
+        };
 
-            match rt.block_on(async {
-                let full_session: FullSession = serde_json::from_str(&serialized)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let rt = Runtime::new().unwrap();
+        #[cfg(target_arch = "wasm32")]
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
 
+        match rt.block_on(async {
+            let full_session: FullSession = serde_json::from_str(&serialized)?;
+
+            let client = {
                 #[cfg(target_arch = "wasm32")]
-                let client = matrix_sdk::Client::builder()
-                    .homeserver_url(&full_session.client_session.homeserver)
-                    .indexeddb_store(
-                        "matrix_client_db",
-                        Some(&full_session.client_session.passphrase),
-                    )
-                    .build()
-                    .await?;
-
+                {
+                    matrix_sdk::Client::builder()
+                        .homeserver_url(&full_session.client_session.homeserver)
+                        .indexeddb_store(
+                            "matrix_client_db",
+                            Some(&full_session.client_session.passphrase),
+                        )
+                        .build()
+                        .await?
+                }
                 #[cfg(not(target_arch = "wasm32"))]
-                let client = matrix_sdk::Client::builder()
-                    .homeserver_url(&full_session.client_session.homeserver)
-                    .sqlite_store(
-                        &full_session.client_session.db_path,
-                        Some(&full_session.client_session.passphrase),
-                    )
-                    .build()
-                    .await?;
+                {
+                    matrix_sdk::Client::builder()
+                        .homeserver_url(&full_session.client_session.homeserver)
+                        .sqlite_store(
+                            &full_session.client_session.db_path,
+                            Some(&full_session.client_session.passphrase),
+                        )
+                        .build()
+                        .await?
+                }
+            };
 
-                client.restore_session(full_session.user_session).await?;
+            client.restore_session(full_session.user_session).await?;
 
-                Ok::<_, anyhow::Error>(Arc::new(Self {
-                    client,
-                    sync_token: Mutex::new(full_session.sync_token),
-                    client_session: full_session.client_session,
-                    event_groups: Default::default(),
-                    selected_room: Default::default(),
-                    pagination_token: Default::default(),
-                    processed_events: Default::default(),
-                }))
-            }) {
-                Ok(client) => LoginOption::LoggedIn(client),
-                Err(_) => LoginOption::default(),
-            }
-        } else {
-            LoginOption::default()
+            Ok::<_, anyhow::Error>(Arc::new(Self {
+                client,
+                sync_token: Mutex::new(full_session.sync_token),
+                client_session: full_session.client_session,
+                event_groups: Arc::default(),
+                selected_room: AsyncMutex::default(),
+                pagination_token: Mutex::default(),
+                processed_events: AsyncMutex::default(),
+            }))
+        }) {
+            Ok(client) => LoginOption::LoggedIn(client),
+            Err(_) => LoginOption::default(),
         }
     }
 
@@ -186,6 +196,7 @@ impl MatrixClient {
         let mut new_groups = Vec::new();
         let mut current_group: Option<EventGroup> = None;
         let mut processed_events = self.processed_events.lock().await;
+        let self_user_id = self.client.user_id().unwrap();
 
         for event in timeline.chunk.iter().rev() {
             if let AnySyncTimelineEvent::MessageLike(msg) = event.raw().deserialize()? {
@@ -212,10 +223,11 @@ impl MatrixClient {
 
                 let event_type = match msg.original_content() {
                     Some(AnyMessageLikeEventContent::Message(message)) => {
-                        EventKind::Message(message.text.iter().map(|t| t.body.clone()).collect())
+                        let text = message.text.iter().map(|t| t.body.clone()).collect();
+                        super::EventKind::Message(text)
                     }
                     Some(AnyMessageLikeEventContent::RoomMessage(message)) => {
-                        EventKind::Message(message.body().to_owned())
+                        super::EventKind::Message(message.body().to_owned())
                     }
                     _ => continue,
                 };
@@ -236,8 +248,9 @@ impl MatrixClient {
                         }
                         current_group = Some(EventGroup {
                             user_id: sender.to_string(),
-                            display_name: display_name.clone(),
+                            display_name,
                             avatar,
+                            from_self: sender == self_user_id,
                             events: vec![event],
                         });
                     }
@@ -280,12 +293,12 @@ impl Client for MatrixClient {
             let room = self
                 .client
                 .get_room(&room_id)
-                .ok_or_else(|| anyhow!("Room not found"))?;
-            let timeline = room_info.timeline;
+                .ok_or_else(|| anyhow!("Комната не найдена"))?;
 
+            let timeline = room_info.timeline;
             let messages = matrix_sdk::room::Messages {
                 chunk: timeline.events,
-                start: timeline.prev_batch.clone().unwrap(),
+                start: timeline.prev_batch.clone().unwrap_or_default(),
                 end: timeline.prev_batch,
                 state: Vec::new(),
             };
@@ -302,18 +315,16 @@ impl Client for MatrixClient {
             .client
             .matrix_auth()
             .session()
-            .ok_or_else(|| anyhow!("Session expired"))?
+            .ok_or_else(|| anyhow!("Сессия истекла"))?
             .clone();
 
-        storage.set_string(
-            "matrix_session",
-            serde_json::to_string(&FullSession {
-                client_session: self.client_session.clone(),
-                user_session,
-                sync_token: self.sync_token.lock().clone(),
-            })?,
-        );
+        let full_session = FullSession {
+            client_session: self.client_session.clone(),
+            user_session,
+            sync_token: self.sync_token.lock().clone(),
+        };
 
+        storage.set_string("matrix_session", serde_json::to_string(&full_session)?);
         Ok(())
     }
 
@@ -322,12 +333,14 @@ impl Client for MatrixClient {
         let room = self
             .client
             .get_room(&room_id)
-            .ok_or_else(|| anyhow!("Room not found"))?;
+            .ok_or_else(|| anyhow!("Комната не найдена"))?;
 
-        *self.event_groups.lock() = Vec::new();
+        // Сброс состояния
+        self.event_groups.lock().clear();
         *self.pagination_token.lock() = None;
         self.processed_events.lock().await.clear();
 
+        // Загрузка сообщений
         let mut options = MessagesOptions::backward();
         options.limit = UInt::new(20).unwrap();
 
@@ -335,23 +348,30 @@ impl Client for MatrixClient {
         self.process_timeline_events(&timeline, &room, true).await?;
         *self.pagination_token.lock() = timeline.end.clone();
         *self.selected_room.lock().await = Some(room);
+
         Ok(())
     }
 
     async fn load_more_events(&self) -> Result<()> {
-        let lock = self.selected_room.lock().await;
-        let room = lock.as_ref().ok_or_else(|| anyhow!("No room selected"))?;
+        let room = {
+            let lock = self.selected_room.lock().await;
+            lock.clone().ok_or_else(|| anyhow!("Комната не выбрана"))?
+        };
 
         let mut options = MessagesOptions::backward();
         options.limit = UInt::new(20).unwrap();
 
+        options.from = self.pagination_token.lock().clone();
+
         let timeline = room.messages(options).await?;
-        self.process_timeline_events(&timeline, room, true).await?;
+        self.process_timeline_events(&timeline, &room, true).await?;
         *self.pagination_token.lock() = timeline.end.clone();
+
         Ok(())
     }
 
     async fn delete_event(&self, _message_id: &str) -> Result<()> {
+        // Заглушка для будущей реализации
         Ok(())
     }
 
@@ -361,12 +381,15 @@ impl Client for MatrixClient {
 
     async fn chats(&self) -> Result<Vec<Chat>> {
         let rooms = self.client.rooms();
-        let mut chats = Vec::with_capacity(rooms.capacity());
+        let mut chats = Vec::with_capacity(rooms.len());
+
         for room in rooms {
+            let avatar = room.avatar(MediaFormat::File).await?.map(Arc::<[u8]>::from);
+
             chats.push(Chat {
                 id: room.room_id().to_string(),
                 name: room.name(),
-                avatar: room.avatar(MediaFormat::File).await?.map(Arc::<[u8]>::from),
+                avatar,
             });
         }
 

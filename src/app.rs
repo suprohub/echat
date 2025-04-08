@@ -4,7 +4,7 @@ use parking_lot::Mutex;
 use tokio::runtime::Runtime;
 
 use crate::{
-    clients::{Chat, EventGroup, LoginOption, matrix::MatrixClient},
+    clients::{Chat, LoginOption, matrix::MatrixClient},
     message::{MessageStyle, MessageWidget},
 };
 
@@ -125,22 +125,19 @@ impl eframe::App for EChat {
                                 });
                             }
                             if let Some(avatar) = &chat.avatar {
-                                ui.image((Cow::default(), avatar.clone()));
+                                ui.image((
+                                    Cow::Owned("chat-avatar-".to_owned() + chat.id.as_str()),
+                                    avatar.clone(),
+                                ));
                             }
                         }
                     });
                 });
 
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    let current_user_id = client.self_id().to_string();
-
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         for group in client.event_groups().unwrap().lock().iter() {
-                            let widget = MessageWidget::new(
-                                MessageStyle::default(),
-                                group.clone(),
-                                current_user_id.clone(),
-                            );
+                            let widget = MessageWidget::new(MessageStyle::default(), group.clone());
                             widget.show(ui);
                         }
                     });

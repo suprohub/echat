@@ -49,6 +49,7 @@ pub struct EventGroup {
     pub display_name: String,
     pub avatar: Option<Arc<[u8]>>,
     pub events: Vec<Event>,
+    pub from_self: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
