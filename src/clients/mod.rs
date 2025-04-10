@@ -4,27 +4,28 @@ use anyhow::Result;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use tokio::runtime::Runtime;
 
 pub mod matrix;
+pub mod telegram;
 
-pub enum LoginOption {
-    Auth { username: String, password: String },
-    LoggedIn(Arc<dyn Client>),
-}
-
-impl Default for LoginOption {
-    fn default() -> Self {
-        Self::Auth {
-            username: String::new(),
-            password: String::new(),
-        }
-    }
+pub trait LoginForm: Send + Sync {
+    fn show(
+        &mut self,
+        clients: &Arc<Mutex<Vec<Arc<dyn Client>>>>,
+        chats: &Arc<Mutex<Vec<Chat>>>,
+        rt: &mut Runtime,
+        frame: &mut eframe::Frame,
+        ui: &mut egui::Ui,
+    ) -> Result<()>;
 }
 
 #[async_trait]
 pub trait Client: Send + Sync {
+    fn client_name(&self) -> &str;
+
     async fn sync(&self) -> Result<()>;
-    fn save(&self, storage: &mut dyn eframe::Storage) -> Result<()>;
+    fn save(&self, storage: &mut dyn eframe::Storage, key: &str) -> Result<()>;
 
     async fn chats(&self) -> Result<Vec<Chat>>;
     async fn select_chat(&self, chat_id: &str) -> Result<()>;
@@ -33,7 +34,7 @@ pub trait Client: Send + Sync {
 
     async fn delete_event(&self, message_id: &str) -> Result<()>;
 
-    fn self_id(&self) -> &str;
+    fn self_id(&self) -> Arc<String>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

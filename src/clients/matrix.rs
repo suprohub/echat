@@ -18,7 +18,7 @@ use rand::{Rng, distr::Alphanumeric};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 
-use super::{Chat, Client, Event, EventGroup, EventKind, LoginOption};
+use super::{Chat, Client, Event, EventGroup, EventKind, LoginForm};
 
 /// Tokio mutex type alias for better readability
 type AsyncMutex<T> = tokio::sync::Mutex<T>;
@@ -118,7 +118,8 @@ impl MatrixClient {
         };
 
         storage.set_string("matrix_session", serde_json::to_string(&full_session)?);
-        storage.flush();
+
+        log::info!("Matrix client session created");
 
         // Create and return the client
         Ok(Arc::new(Self {
@@ -157,10 +158,10 @@ impl MatrixClient {
     }
 
     /// Load an existing client session from storage
-    pub fn load_from_storage(storage: &dyn eframe::Storage) -> LoginOption {
-        let serialized = match storage.get_string("matrix_session") {
+    pub fn load_from_storage(storage: &dyn eframe::Storage, key: &str) -> Result<Arc<Self>> {
+        let serialized = match storage.get_string(key) {
             Some(s) => s,
-            None => return LoginOption::default(),
+            None => return Err(anyhow!("Сессия не найдена в хранилище")),
         };
 
         // Create appropriate runtime for platform
@@ -171,7 +172,7 @@ impl MatrixClient {
             .build()
             .unwrap();
 
-        match rt.block_on(async {
+        rt.block_on(async {
             // Parse stored session data
             let full_session: FullSession = serde_json::from_str(&serialized)?;
 
@@ -200,7 +201,7 @@ impl MatrixClient {
             client.restore_session(full_session.user_session).await?;
 
             // Create and return the client
-            Ok::<_, anyhow::Error>(Arc::new(Self {
+            Ok(Arc::new(Self {
                 client,
                 sync_token: Mutex::new(full_session.sync_token),
                 client_session: full_session.client_session,
@@ -209,10 +210,7 @@ impl MatrixClient {
                 pagination_token: Mutex::default(),
                 processed_events: AsyncMutex::default(),
             }))
-        }) {
-            Ok(client) => LoginOption::LoggedIn(client),
-            Err(_) => LoginOption::default(),
-        }
+        })
     }
 
     /// Process timeline events into event groups for display
@@ -326,6 +324,10 @@ impl MatrixClient {
 
 #[async_trait::async_trait]
 impl Client for MatrixClient {
+    fn client_name(&self) -> &str {
+        "matrix"
+    }
+
     /// Synchronize with the Matrix server to get latest messages
     async fn sync(&self) -> Result<()> {
         // Set up lazy loading filter for optimization
@@ -366,7 +368,7 @@ impl Client for MatrixClient {
     }
 
     /// Save current session state to storage
-    fn save(&self, storage: &mut dyn eframe::Storage) -> Result<()> {
+    fn save(&self, storage: &mut dyn eframe::Storage, key: &str) -> Result<()> {
         let user_session = self
             .client
             .matrix_auth()
@@ -380,7 +382,7 @@ impl Client for MatrixClient {
             sync_token: self.sync_token.lock().clone(),
         };
 
-        storage.set_string("matrix_session", serde_json::to_string(&full_session)?);
+        storage.set_string(key, serde_json::to_string(&full_session)?);
         Ok(())
     }
 
@@ -400,7 +402,7 @@ impl Client for MatrixClient {
 
         // Set up message loading options
         let mut options = MessagesOptions::backward();
-        options.limit = UInt::new(20).unwrap_or(UInt::default());
+        options.limit = UInt::new(20).unwrap_or_default();
 
         // Load initial messages
         let timeline = room.messages(options).await?;
@@ -423,7 +425,7 @@ impl Client for MatrixClient {
 
         // Set up options with pagination token
         let mut options = MessagesOptions::backward();
-        options.limit = UInt::new(20).unwrap_or(UInt::default());
+        options.limit = UInt::new(20).unwrap_or_default();
         options.from = self.pagination_token.lock().clone();
 
         // Load and process messages
@@ -465,7 +467,134 @@ impl Client for MatrixClient {
     }
 
     /// Get current user ID
-    fn self_id(&self) -> &str {
-        self.client.user_id().map_or("", |id| id.as_str())
+    fn self_id(&self) -> Arc<String> {
+        Arc::new(
+            self.client
+                .user_id()
+                .map_or("", |id| id.as_str())
+                .to_string(),
+        )
+    }
+}
+
+pub struct Login {
+    username: String,
+    password: String,
+    server_url: String,
+    error_message: Option<String>,
+}
+
+impl Default for Login {
+    fn default() -> Self {
+        Self {
+            username: String::new(),
+            password: String::new(),
+            server_url: "https://matrix.org/".to_string(),
+            error_message: None,
+        }
+    }
+}
+
+impl LoginForm for Login {
+    fn show(
+        &mut self,
+        clients: &Arc<Mutex<Vec<Arc<dyn Client>>>>,
+        chats: &Arc<Mutex<Vec<Chat>>>,
+        rt: &mut Runtime,
+        frame: &mut eframe::Frame,
+        ui: &mut egui::Ui,
+    ) -> Result<()> {
+        let mut try_login = false;
+
+        ui.vertical_centered(|ui| {
+            ui.heading("Login to Matrix");
+            ui.add_space(10.0);
+
+            ui.label("Username:");
+            ui.text_edit_singleline(&mut self.username);
+
+            ui.add_space(5.0);
+
+            ui.label("Password:");
+            let password_edit = egui::TextEdit::singleline(&mut self.password)
+                .password(true)
+                .hint_text("Enter your password");
+            ui.add(password_edit);
+
+            ui.add_space(5.0);
+
+            ui.label("Server URL:");
+            let server_edit =
+                egui::TextEdit::singleline(&mut self.server_url).hint_text("https://matrix.org/");
+            ui.add(server_edit);
+
+            ui.add_space(10.0);
+
+            if ui.button("Login").clicked() {
+                try_login = true;
+            }
+
+            // Show error message if needed
+            if let Some(error) = &self.error_message {
+                ui.add_space(10.0);
+                ui.colored_label(egui::Color32::RED, error);
+            }
+        });
+
+        if try_login {
+            if let Some(storage) = frame.storage_mut() {
+                // Make sure the server URL has the correct format
+                let server_url = if !self.server_url.starts_with("http") {
+                    format!("https://{}", self.server_url)
+                } else {
+                    self.server_url.clone()
+                };
+
+                // Perform the login (block on this part)
+                match rt.block_on(MatrixClient::login(
+                    storage,
+                    &self.username,
+                    &self.password,
+                    &server_url,
+                )) {
+                    Ok(client) => {
+                        // Login successful, clear error message
+                        self.error_message = None;
+
+                        // Add client to the clients list
+                        clients.lock().push(client.clone());
+
+                        // Clone for async tasks
+                        let client_clone = client.clone();
+                        let chats_clone = chats.clone();
+
+                        // Spawn an async task to handle sync and chat loading
+                        rt.spawn(async move {
+                            if let Err(e) = client_clone.sync().await {
+                                log::error!("Failed to sync with server: {}", e);
+                                return;
+                            }
+
+                            match client_clone.chats().await {
+                                Ok(client_chats) => {
+                                    *chats_clone.lock() = client_chats;
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to fetch chats: {}", e);
+                                }
+                            }
+                        });
+
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        log::error!("Login failed: {}", e);
+                        self.error_message = Some(format!("Login failed: {}", e));
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }

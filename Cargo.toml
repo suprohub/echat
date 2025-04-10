@@ -14,7 +14,7 @@ async-trait = "0.1"
 parking_lot = { version = "0.12", features = ["serde"] }
 chrono = "0.4"
 egui = { version = "0.31", features = [
-    "rayon",         # For enabling fast text tesselation
+    "rayon", # For enabling fast text tesselation
 ] }
 eframe = { version = "0.31", default-features = false, features = [
     "accesskit",     # Make egui compatible with screen readers. NOTE: adds a lot of dependencies.
@@ -23,7 +23,11 @@ eframe = { version = "0.31", default-features = false, features = [
     "persistence",   # Enable restoring app state when restarting the app.
     "wayland",       # To support Linux (and CI)
 ] }
-egui_extras = { version = "0.31", features = ["datepicker", "serde", "all_loaders"] }
+egui_extras = { version = "0.31", features = [
+    "datepicker",
+    "serde",
+    "all_loaders",
+] }
 image = "0.25"
 log = "0.4"
 
@@ -42,17 +46,25 @@ tokio = { version = "1.44", features = ["rt-multi-thread", "macros"] }
 dirs = "6.0"
 simple_logger = "5.0"
 
+grammers-client = "*"
+
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-matrix-sdk = { version = "0.10", default-features = false, features = ["automatic-room-key-forwarding", "native-tls", "e2e-encryption", "qrcode", "indexeddb"] }
+matrix-sdk = { version = "0.10", default-features = false, features = [
+    "automatic-room-key-forwarding",
+    "native-tls",
+    "e2e-encryption",
+    "qrcode",
+    "indexeddb",
+] }
 tokio = { version = "1.44", features = ["macros", "rt"] }
 tokio_with_wasm = "0.8"
 wasm-bindgen-futures = "0.4"
-web-sys = "0.3.70"           # to access the DOM (to hide the loading text)
+web-sys = "0.3.70" # to access the DOM (to hide the loading text)
 getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [profile.release]
-opt-level = 2 # fast and small wasm
+opt-level = 2     # fast and small wasm
 codegen-units = 1
 lto = true
 strip = true
