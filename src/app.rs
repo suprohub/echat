@@ -54,6 +54,9 @@ impl Default for EChat {
 
 impl EChat {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Load vars
+        dotenv::dotenv().unwrap();
+
         // Enable image loading for avatars
         egui_extras::install_image_loaders(&cc.egui_ctx);
 

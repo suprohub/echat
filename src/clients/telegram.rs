@@ -86,18 +86,6 @@ impl LoginForm for Login {
             ui.label("Phone Number:");
             ui.text_edit_singleline(&mut self.phone);
 
-            ui.add_space(5.0);
-
-            ui.label("API ID:");
-            ui.text_edit_singleline(&mut self.api_id);
-
-            ui.add_space(5.0);
-
-            ui.label("API Hash:");
-            let api_hash_edit =
-                egui::TextEdit::singleline(&mut self.api_hash).hint_text("Enter your API hash");
-            ui.add(api_hash_edit);
-
             ui.add_space(10.0);
 
             if ui.button("Login").clicked() {
@@ -113,11 +101,29 @@ impl LoginForm for Login {
 
         if try_login {
             if let Some(storage) = frame.storage_mut() {
-                // Convert api_id from string to i32
-                let api_id = match self.api_id.parse::<i32>() {
-                    Ok(id) => id,
+                // Get API ID and API Hash from environment variables
+                let api_id = match std::env::var("API_ID") {
+                    Ok(id_str) => match id_str.parse::<i32>() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            self.error_message = Some(
+                                "API_ID environment variable must be a valid number".to_string(),
+                            );
+                            return Ok(());
+                        }
+                    },
                     Err(_) => {
-                        self.error_message = Some("API ID must be a valid number".to_string());
+                        self.error_message =
+                            Some("API_ID environment variable not set".to_string());
+                        return Ok(());
+                    }
+                };
+
+                let api_hash = match std::env::var("API_HASH") {
+                    Ok(hash) => hash,
+                    Err(_) => {
+                        self.error_message =
+                            Some("API_HASH environment variable not set".to_string());
                         return Ok(());
                     }
                 };
@@ -126,11 +132,36 @@ impl LoginForm for Login {
                     storage,
                     &self.phone,
                     api_id,
-                    &self.api_hash,
+                    &api_hash,
                 )) {
-                    Ok(_client) => {
+                    Ok(client) => {
                         // Login successful, clear error message
                         self.error_message = None;
+
+                        // Add client to the clients list
+                        clients.lock().push(client.clone());
+
+                        // Clone for async tasks
+                        let client_clone = client.clone();
+                        let chats_clone = chats.clone();
+
+                        // Spawn an async task to handle sync and chat loading
+                        rt.spawn(async move {
+                            if let Err(e) = client_clone.sync().await {
+                                log::error!("Failed to sync with server: {}", e);
+                                return;
+                            }
+
+                            match client_clone.chats().await {
+                                Ok(client_chats) => {
+                                    *chats_clone.lock() = client_chats;
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to fetch chats: {}", e);
+                                }
+                            }
+                        });
+
                         return Ok(());
                     }
                     Err(e) => {
